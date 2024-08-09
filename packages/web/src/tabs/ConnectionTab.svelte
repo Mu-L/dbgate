@@ -28,30 +28,38 @@
   import { apiCall } from '../utility/api';
   import { showSnackbarError, showSnackbarSuccess } from '../utility/snackbar';
   import { changeTab } from '../utility/common';
-  import getConnectionLabel from '../utility/getConnectionLabel';
+  import { getConnectionLabel } from 'dbgate-tools';
   import { onMount } from 'svelte';
   import { disconnectServerConnection, openConnection } from '../appobj/ConnectionAppObject.svelte';
   import { disconnectDatabaseConnection } from '../appobj/DatabaseAppObject.svelte';
+  import { useConfig } from '../utility/metadataLoaders';
+  import ConnectionAdvancedDriverFields from '../settings/ConnectionAdvancedDriverFields.svelte';
 
   export let connection;
   export let tabid;
   export let conid;
+  export let connectionStore = undefined;
+
+  export let onlyTestButton;
 
   let isTesting;
   let sqlConnectResult;
 
-  const values = writable(
-    connection || {
-      server: getCurrentConfig().isDocker ? 'dockerhost' : 'localhost',
-      engine: '',
-    }
-  );
+  const values =
+    connectionStore ||
+    writable(
+      connection || {
+        server: getCurrentConfig().isDocker ? 'dockerhost' : 'localhost',
+        engine: '',
+      }
+    );
 
   // $: console.log('ConnectionTab.$values', $values);
   // $: console.log('ConnectionTab.driver', driver);
 
   $: engine = $values.engine;
   $: driver = $extensions.drivers.find(x => x.engine == engine);
+  $: config = useConfig();
 
   const testIdRef = createRef(0);
 
@@ -86,7 +94,7 @@
       'socketPath',
       'serviceName',
     ];
-    const visibleProps = allProps.filter(x => driver?.showConnectionField(x, $values));
+    const visibleProps = allProps.filter(x => driver?.showConnectionField(x, $values, { config: $config }));
     const omitProps = _.difference(allProps, visibleProps);
     if (!$values.defaultDatabase) omitProps.push('singleDatabase');
 
@@ -174,6 +182,11 @@
     }
   });
 
+  export function changeConnectionBeforeSave(connection) {
+    if (driver?.beforeConnectionSave) return driver.beforeConnectionSave(connection);
+    return connection;
+  }
+
   $: isConnected = $openedConnections.includes($values._id) || $openedSingleDatabaseConnections.includes($values._id);
 
   // $: console.log('CONN VALUES', $values);
@@ -198,13 +211,23 @@
           label: 'SSL',
           component: ConnectionSslFields,
         },
+        {
+          label: 'Advanced',
+          component: ConnectionAdvancedDriverFields,
+        },
       ]}
     />
 
     {#if driver}
       <div class="flex">
         <div class="buttons">
-          {#if isConnected}
+          {#if onlyTestButton}
+            {#if isTesting}
+              <FormButton value="Cancel test" on:click={handleCancelTest} />
+            {:else}
+              <FormButton value="Test connection" on:click={handleTest} />
+            {/if}
+          {:else if isConnected}
             <FormButton value="Disconnect" on:click={handleDisconnect} />
           {:else}
             <FormButton value="Connect" on:click={handleConnect} />

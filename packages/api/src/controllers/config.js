@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 const axios = require('axios');
 const { datadir, getLogsFilePath } = require('../utility/directories');
-const { hasPermission, getLogins } = require('../utility/hasPermission');
+const { hasPermission } = require('../utility/hasPermission');
 const socket = require('../utility/socket');
 const _ = require('lodash');
 const AsyncLock = require('async-lock');
@@ -11,6 +11,7 @@ const AsyncLock = require('async-lock');
 const currentVersion = require('../currentVersion');
 const platformInfo = require('../utility/platformInfo');
 const connections = require('../controllers/connections');
+const { getAuthProviderFromReq } = require('../auth/authProvider');
 
 const lock = new AsyncLock();
 
@@ -27,27 +28,48 @@ module.exports = {
 
   get_meta: true,
   async get(_params, req) {
-    const logins = getLogins();
-    const loginName =
-      req && req.user && req.user.login ? req.user.login : req && req.auth && req.auth.user ? req.auth.user : null;
-    const login = logins && loginName ? logins.find(x => x.login == loginName) : null;
-    const permissions = login ? login.permissions : process.env.PERMISSIONS;
+    const authProvider = getAuthProviderFromReq(req);
+    const login = authProvider.getCurrentLogin(req);
+    const permissions = authProvider.getCurrentPermissions(req);
+    const isUserLoggedIn = authProvider.isUserLoggedIn(req);
+
+    const singleConid = authProvider.getSingleConnectionId(req);
+
+    const singleConnection = singleConid
+      ? await connections.getCore({ conid: singleConid })
+      : connections.singleConnection;
+
+    let configurationError = null;
+    if (process.env.STORAGE_DATABASE && process.env.BASIC_AUTH) {
+      configurationError =
+        'Basic authentization is not allowed, when using storage. Cannot use both STORAGE_DATABASE and BASIC_AUTH';
+    }
 
     return {
       runAsPortal: !!connections.portalConnections,
       singleDbConnection: connections.singleDbConnection,
-      singleConnection: connections.singleConnection,
+      singleConnection: singleConnection,
+      isUserLoggedIn,
       // hideAppEditor: !!process.env.HIDE_APP_EDITOR,
       allowShellConnection: platformInfo.allowShellConnection,
       allowShellScripting: platformInfo.allowShellScripting,
       isDocker: platformInfo.isDocker,
+      isElectron: platformInfo.isElectron,
+      isLicenseValid: platformInfo.isLicenseValid,
+      checkedLicense: platformInfo.checkedLicense,
+      configurationError,
+      logoutUrl: await authProvider.getLogoutUrl(),
       permissions,
       login,
-      oauth: process.env.OAUTH_AUTH,
-      oauthClient: process.env.OAUTH_CLIENT_ID,
-      oauthScope: process.env.OAUTH_SCOPE,
-      oauthLogout: process.env.OAUTH_LOGOUT,
-      isLoginForm: !!process.env.AD_URL || (!!logins && !process.env.BASIC_AUTH),
+      // ...additionalConfigProps,
+      isBasicAuth: !!process.env.BASIC_AUTH,
+      isAdminLoginForm: !!(
+        process.env.STORAGE_DATABASE &&
+        process.env.ADMIN_PASSWORD &&
+        !process.env.BASIC_AUTH &&
+        platformInfo.checkedLicense?.type == 'premium'
+      ),
+      storageDatabase: process.env.STORAGE_DATABASE,
       logsFilePath: getLogsFilePath(),
       connectionsFilePath: path.join(datadir(), 'connections.jsonl'),
       ...currentVersion,

@@ -4,13 +4,19 @@
 
   const thisInstance = get_current_component();
 
-  export const activator = createActivator('ToolStripContainer', false);
+  export const activator = createActivator('ToolStripContainer', true);
 
   $: isComponentActive = $isComponentActiveStore('ToolStripContainer', thisInstance);
+
+  export function activate() {
+    activator?.activate();
+  }
+
+  export let scrollContent;
 </script>
 
 <div class="wrapper">
-  <div class="content">
+  <div class="content" class:scrollContent>
     <slot />
   </div>
 
@@ -32,11 +38,16 @@
     display: flex;
     flex: 1;
     position: relative;
+    max-height: 100%;
   }
 
   .toolstrip {
     display: flex;
     flex-wrap: wrap;
     background: var(--theme-bg-1);
+  }
+
+  .scrollContent {
+    overflow-y: auto;
   }
 </style>

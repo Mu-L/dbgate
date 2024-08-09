@@ -1,23 +1,19 @@
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const getExpressPath = require('../utility/getExpressPath');
-const { getLogins } = require('../utility/hasPermission');
 const { getLogger } = require('dbgate-tools');
 const AD = require('activedirectory2').promiseWrapper;
 const crypto = require('crypto');
+const { getTokenSecret, getTokenLifetime } = require('../auth/authCommon');
+const {
+  getAuthProviderFromReq,
+  getAuthProviders,
+  getDefaultAuthProvider,
+  getAuthProviderById,
+} = require('../auth/authProvider');
+const storage = require('./storage');
 
 const logger = getLogger('auth');
-
-const tokenSecret = crypto.randomUUID();
-
-function shouldAuthorizeApi() {
-  const logins = getLogins();
-  return !!process.env.OAUTH_AUTH || !!process.env.AD_URL || (!!logins && !process.env.BASIC_AUTH);
-}
-
-function getTokenLifetime() {
-  return process.env.TOKEN_LIFETIME || '1d';
-}
 
 function unauthorizedResponse(req, res, text) {
   // if (req.path == getExpressPath('/config/get-settings')) {
@@ -30,11 +26,30 @@ function unauthorizedResponse(req, res, text) {
 }
 
 function authMiddleware(req, res, next) {
-  const SKIP_AUTH_PATHS = ['/config/get', '/auth/oauth-token', '/auth/login', '/stream'];
+  const SKIP_AUTH_PATHS = [
+    '/config/get',
+    '/config/logout',
+    '/config/get-settings',
+    '/auth/oauth-token',
+    '/auth/login',
+    '/auth/redirect',
+    '/stream',
+    'storage/get-connections-for-login-page',
+    'auth/get-providers',
+    '/connections/dblogin',
+    '/connections/dblogin-auth',
+    '/connections/dblogin-auth-token',
+  ];
 
-  if (!shouldAuthorizeApi()) {
+  // console.log('********************* getAuthProvider()', getAuthProvider());
+
+  // const isAdminPage = req.headers['x-is-admin-page'] == 'true';
+
+  if (process.env.BASIC_AUTH) {
+    // API is not authorized for basic auth
     return next();
   }
+
   let skipAuth = !!SKIP_AUTH_PATHS.find(x => req.path == getExpressPath(x));
 
   const authHeader = req.headers.authorization;
@@ -46,7 +61,7 @@ function authMiddleware(req, res, next) {
   }
   const token = authHeader.split(' ')[1];
   try {
-    const decoded = jwt.verify(token, tokenSecret);
+    const decoded = jwt.verify(token, getTokenSecret());
     req.user = decoded;
     return next();
   } catch (err) {
@@ -63,106 +78,49 @@ function authMiddleware(req, res, next) {
 module.exports = {
   oauthToken_meta: true,
   async oauthToken(params) {
-    const { redirectUri, code } = params;
-
-    const scopeParam = process.env.OAUTH_SCOPE ? `&scope=${process.env.OAUTH_SCOPE}` : '';
-    const resp = await axios.default.post(
-      `${process.env.OAUTH_TOKEN}`,
-      `grant_type=authorization_code&code=${encodeURIComponent(code)}&redirect_uri=${encodeURIComponent(
-        redirectUri
-      )}&client_id=${process.env.OAUTH_CLIENT_ID}&client_secret=${process.env.OAUTH_CLIENT_SECRET}${scopeParam}`
-    );
-
-    const { access_token, refresh_token } = resp.data;
-
-    const payload = jwt.decode(access_token);
-
-    logger.info({ payload }, 'User payload returned from OAUTH');
-
-    const login =
-      process.env.OAUTH_LOGIN_FIELD && payload && payload[process.env.OAUTH_LOGIN_FIELD]
-        ? payload[process.env.OAUTH_LOGIN_FIELD]
-        : 'oauth';
-
-    if (
-      process.env.OAUTH_ALLOWED_LOGINS &&
-      !process.env.OAUTH_ALLOWED_LOGINS.split(',').find(x => x.toLowerCase().trim() == login.toLowerCase().trim())
-    ) {
-      return { error: `Username ${login} not allowed to log in` };
-    }
-
-    const groups = 
-      process.env.OAUTH_GROUP_FIELD && payload && payload[process.env.OAUTH_GROUP_FIELD]
-        ? payload[process.env.OAUTH_GROUP_FIELD]
-        : [];
-
-    const allowedGroups = 
-      process.env.OAUTH_ALLOWED_GROUPS
-        ? process.env.OAUTH_ALLOWED_GROUPS.split(',').map(group => group.toLowerCase().trim())
-        : [];
-    
-    if (
-      process.env.OAUTH_ALLOWED_GROUPS && 
-      !groups.some(group => allowedGroups.includes(group.toLowerCase().trim()))
-    ) {
-      return { error: `Username ${login} does not belong to an allowed group` };
-    }
-
-    if (access_token) {
-      return {
-        accessToken: jwt.sign({ login }, tokenSecret, { expiresIn: getTokenLifetime() }),
-      };
-    }
-
-    return { error: 'Token not found' };
+    const { amoid } = params;
+    return getAuthProviderById(amoid).oauthToken(params);
   },
   login_meta: true,
   async login(params) {
-    const { login, password } = params;
+    const { amoid, login, password, isAdminPage } = params;
 
-    if (process.env.AD_URL) {
-      const adConfig = {
-        url: process.env.AD_URL,
-        baseDN: process.env.AD_BASEDN,
-        username: process.env.AD_USERNAME,
-        password: process.env.AD_PASSOWRD,
-      };
-      const ad = new AD(adConfig);
-      try {
-        const res = await ad.authenticate(login, password);
-        if (!res) {
-          return { error: 'Login failed' };
-        }
-        if (
-          process.env.AD_ALLOWED_LOGINS &&
-          !process.env.AD_ALLOWED_LOGINS.split(',').find(x => x.toLowerCase().trim() == login.toLowerCase().trim())
-        ) {
-          return { error: `Username ${login} not allowed to log in` };
-        }
+    if (isAdminPage) {
+      if (process.env.ADMIN_PASSWORD && process.env.ADMIN_PASSWORD == password) {
         return {
-          accessToken: jwt.sign({ login }, tokenSecret, { expiresIn: getTokenLifetime() }),
-        };
-      } catch (err) {
-        logger.error({ err }, 'Failed active directory authentization');
-        return {
-          error: err.message,
+          accessToken: jwt.sign(
+            {
+              login: 'superadmin',
+              permissions: await storage.loadSuperadminPermissions(),
+              roleId: -3,
+            },
+            getTokenSecret(),
+            {
+              expiresIn: getTokenLifetime(),
+            }
+          ),
         };
       }
+
+      return { error: 'Login failed' };
     }
 
-    const logins = getLogins();
-    if (!logins) {
-      return { error: 'Logins not configured' };
-    }
-    const foundLogin = logins.find(x => x.login == login);
-    if (foundLogin && foundLogin.password && foundLogin.password == password) {
-      return {
-        accessToken: jwt.sign({ login }, tokenSecret, { expiresIn: getTokenLifetime() }),
-      };
-    }
-    return { error: 'Invalid credentials' };
+    return getAuthProviderById(amoid).login(login, password);
+  },
+
+  getProviders_meta: true,
+  getProviders() {
+    return {
+      providers: getAuthProviders().map(x => x.toJson()),
+      default: getDefaultAuthProvider()?.amoid,
+    };
+  },
+
+  redirect_meta: true,
+  async redirect(params) {
+    const { amoid } = params;
+    return getAuthProviderById(amoid).redirect(params);
   },
 
   authMiddleware,
-  shouldAuthorizeApi,
 };

@@ -1,12 +1,22 @@
 const _ = require('lodash');
 const stream = require('stream');
 
-const driverBases = require('../frontend/drivers');
+const driverBase = require('../frontend/driver');
 const Analyser = require('./Analyser');
-//--const pg = require('pg');
-const oracledb = require('oracledb');
 const { createBulkInsertStreamBase, makeUniqueColumnNames } = require('dbgate-tools');
 const createOracleBulkInsertStream = require('./createOracleBulkInsertStream');
+const { platform } = require('os');
+
+let requireOracledb;
+let platformInfo;
+
+let oracledbValue;
+function getOracledb() {
+  if (!oracledbValue) {
+    oracledbValue = requireOracledb();
+  }
+  return oracledbValue;
+}
 
 /*
 pg.types.setTypeParser(1082, 'text', val => val); // date
@@ -33,8 +43,10 @@ function zipDataRow(rowArray, columns) {
   return obj;
 }
 
+let oracleClientInitialized = false;
+
 /** @type {import('dbgate-types').EngineDriver} */
-const drivers = driverBases.map(driverBase => ({
+const driver = {
   ...driverBase,
   analyserClass: Analyser,
 
@@ -51,8 +63,14 @@ const drivers = driverBases.map(driverBase => ({
     ssl,
     isReadOnly,
     authType,
+    clientLibraryPath,
     socketPath,
   }) {
+    const oracledb = getOracledb();
+    if (authType == 'thick' && !oracleClientInitialized) {
+      oracledb.initOracleClient({ libDir: clientLibraryPath || process.env.ORACLE_INSTANT_CLIENT });
+      oracleClientInitialized = true;
+    }
     client = await oracledb.getConnection({
       user,
       password,
@@ -154,10 +172,12 @@ const drivers = driverBases.map(driverBase => ({
       });
 
       query.on('error', error => {
-        console.log('ERROR', error);
-        const { message, lineNumber, procName } = error;
+        const { message, offset, procName } = error;
+        // get line number from string s of character at offset
+        const lineNumber = (sql.substring(0, offset).match(/\n/g) || []).length;
         options.info({
           message,
+          offset,
           line: lineNumber,
           procedure: procName,
           time: new Date(),
@@ -176,8 +196,11 @@ const drivers = driverBases.map(driverBase => ({
       client.execute(sql, (err, res) => {
         if (err) {
           console.log('Error query', err, sql);
+          const lineNumber = (sql.substring(0, err.offset).match(/\n/g) || []).length;
           options.info({
             message: err.message,
+            line: lineNumber,
+            offset: err.offset,
             time: new Date(),
             severity: 'error',
           });
@@ -310,17 +333,26 @@ const drivers = driverBases.map(driverBase => ({
   },
 
   getAuthTypes() {
-    return [
-      {
-        title: 'Host and port',
-        name: 'hostPort',
-      },
-      {
-        title: 'Socket',
-        name: 'socket',
-      },
-    ];
+    if (platformInfo?.isElectron || process.env.ORACLE_INSTANT_CLIENT) {
+      return [
+        {
+          title: 'Thin mode (default) - direct connection to Oracle database',
+          name: 'thin',
+        },
+        {
+          title: 'Thick mode - connection via Oracle instant client',
+          name: 'thick',
+        },
+      ];
+    }
   },
-}));
+};
 
-module.exports = drivers;
+driver.initialize = dbgateEnv => {
+  if (dbgateEnv.nativeModules && dbgateEnv.nativeModules['oracledb']) {
+    requireOracledb = dbgateEnv.nativeModules['oracledb'];
+  }
+  platformInfo = dbgateEnv.platformInfo;
+};
+
+module.exports = driver;
