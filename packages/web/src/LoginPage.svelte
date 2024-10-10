@@ -10,9 +10,9 @@
   import FormSelectField from './forms/FormSelectField.svelte';
   import { writable } from 'svelte/store';
   import FormProviderCore from './forms/FormProviderCore.svelte';
-  import { openWebLink } from './utility/exportFileTools';
   import FontIcon from './icons/FontIcon.svelte';
   import createRef from './utility/createRef';
+  import Link from './elements/Link.svelte';
 
   export let isAdminPage;
 
@@ -135,6 +135,15 @@
     </div>
     <div class="box">
       <div class="heading">Log In</div>
+      <div class="login-link">
+        {#if $config?.isAdminLoginForm}
+          {#if isAdminPage}
+            <Link internalRedirect="/login.html">Log In as Regular User</Link>
+          {:else}
+            <Link internalRedirect="/admin-login.html">Log In as Administrator</Link>
+          {/if}
+        {/if}
+      </div>
       <FormProviderCore {values}>
         {#if !isAdminPage && availableProviders?.length >= 2}
           <FormSelectField
@@ -259,6 +268,14 @@
         </div>
       </FormProviderCore>
     </div>
+
+    <div class="loginButtonWrapper">
+      {#each availableProviders.filter(x => x.workflowType == 'anonymous' || x.workflowType == 'redirect') as provider}
+        <div class="loginButton" on:click={() => processSingleProvider(provider)}>
+          {provider.name}
+        </div>
+      {/each}
+    </div>
   </div>
 </div>
 
@@ -312,6 +329,7 @@
     border: 1px solid var(--theme-border);
     border-radius: 4px;
     background-color: var(--theme-bg-0);
+    position: relative;
   }
 
   .wrap {
@@ -322,5 +340,35 @@
     text-align: center;
     margin: 1em;
     font-size: xx-large;
+  }
+
+  .loginButton {
+    padding: 10px;
+    width: 300px;
+    margin: 20px;
+    flex: 1;
+    text-align: center;
+    border-radius: 5px;
+    cursor: pointer;
+
+    border: 1px solid var(--theme-bg-button-inv-3);
+    background-color: var(--theme-bg-button-inv-2);
+    color: var(--theme-font-inv-1);
+  }
+
+  .loginButton:hover {
+    background-color: var(--theme-bg-button-inv-3);
+  }
+
+  .loginButtonWrapper {
+    display: flex;
+    flex-wrap: wrap;
+    width: 600px;
+  }
+
+  .login-link {
+    position: absolute;
+    top: 10px;
+    right: 10px;
   }
 </style>
